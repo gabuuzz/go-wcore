@@ -23,10 +23,9 @@ import (
 )
 
 var (
-	connexionCount uint32
-	intReg         = regexp.MustCompile("[0-9]+")
-	stringReg      = regexp.MustCompile("[^\\/]+")
-	ctlBaseType    = reflect.TypeOf(Controller{})
+	intReg      = regexp.MustCompile("[0-9]+")
+	stringReg   = regexp.MustCompile("[^\\/]+")
+	ctlBaseType = reflect.TypeOf(Controller{})
 )
 
 //tcpKeepAliveListener copyed from Golang net/http lib to allow ln.Close()

@@ -26,7 +26,7 @@ func (t *testing) Stop() {
 }
 
 func main() {
-	configureRuntime()
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	/*if err := wcore.Run(":8080"); err != nil {
 		log.Fatal(err)
@@ -80,8 +80,4 @@ func main() {
 		wc.Wait()
 	}()
 
-}
-
-func configureRuntime() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
 }
