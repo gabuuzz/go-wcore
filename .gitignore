@@ -3,3 +3,5 @@
 /src/*
 !/src/wcore
 !/src/wcore/*
+!/src/main
+!/src/main/*
