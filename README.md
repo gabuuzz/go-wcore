@@ -1,2 +1,2 @@
 # go-wcore
-A base to create websites in Golang and MongoDB
+Simple base to create websites using Golang and MongoDB
