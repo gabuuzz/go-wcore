@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,7 +37,7 @@ type tcpKeepAliveListener struct {
 
 func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	if ln.cancelled {
-		return nil, fmt.Errorf("Usage of cancelled connexion")
+		return nil, fmt.Errorf("Use of cancelled connexion")
 	}
 	tc, err := ln.AcceptTCP()
 	if err != nil {
@@ -59,7 +60,8 @@ func (ln tcpKeepAliveListener) Stop() error {
 //WCore
 type WCore struct {
 	done     chan bool
-	r        *httprouter.Router
+	closed   bool
+	router   *httprouter.Router
 	ctls     []ControllerInterface //Controllers
 	db       *mgo.Session
 	services []WService
@@ -88,7 +90,8 @@ func New() (*WCore, error) {
 	wc.db.SetMode(mgo.Monotonic, true)
 
 	wc.done = make(chan bool, 1)
-	wc.r = httprouter.New()
+	wc.closed = false
+	wc.router = httprouter.New()
 	wc.ctls = []ControllerInterface{}
 	wc.services = []WService{}
 
@@ -96,9 +99,16 @@ func New() (*WCore, error) {
 }
 func (w *WCore) Close() {
 	defer w.db.Close()
-	for _, servs := range w.services {
-		servs.Stop()
-	}
+	func() {
+		defer w.mtx.Unlock()
+		w.mtx.Lock()
+		if !w.closed {
+			w.closed = true
+			for _, servs := range w.services {
+				servs.Stop()
+			}
+		}
+	}()
 	w.Wait()
 
 }
@@ -106,34 +116,22 @@ func (w *WCore) Wait() {
 	w.wg.Wait()
 }
 
-func (w *WCore) AddController(ctl ControllerInterface) {
-	w.mtx.Lock()
-	defer w.mtx.Unlock()
-
-	w.ctls = append(w.ctls, ctl)
-}
-func (w *WCore) RunService(srv WService) {
-	w.mtx.Lock()
-	defer w.mtx.Unlock()
-
-	w.services = append(w.services, srv)
-	go func(wc *WCore) {
-		wc.wg.Add(1)
-		defer wc.wg.Done()
-
-		srv.Start()
-	}(w)
-	runtime.Gosched() //Try to garanteed that service is running on return
-}
 func (w *WCore) DB(name string) *mgo.Database {
 	return w.db.DB(name)
+}
+
+func (w *WCore) AddController(ctl ControllerInterface) {
+	defer w.mtx.Unlock()
+	w.mtx.Lock()
+
+	w.ctls = append(w.ctls, ctl)
 }
 
 func (w *WCore) Serve(path string) error {
 	srv := new(httpService)
 	srv.connexionCount = 0
 	srv.done = make(chan bool, 1)
-	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(srv.connexionCountHandler(handlers.ProxyHeaders(w.r)))}
+	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(srv.connexionCountHandler(handlers.ProxyHeaders(w.router)))}
 	if srv.serv.Addr == "" {
 		srv.serv.Addr = ":http"
 	}
@@ -152,11 +150,26 @@ func (w *WCore) Serve(path string) error {
 //used to prevent memory leak from Goroutines or "dead" Goroutines
 func (srv *httpService) connexionCountHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddUint32(&srv.connexionCount, 1)
 		defer atomic.AddUint32(&srv.connexionCount, ^uint32(0))
+		atomic.AddUint32(&srv.connexionCount, 1)
 
 		h.ServeHTTP(w, r)
 	})
+}
+
+func (w *WCore) RunService(srv WService) {
+	defer w.mtx.Unlock()
+	w.mtx.Lock()
+
+	w.services = append(w.services, srv)
+
+	w.wg.Add(1) //Add() need to be called before Wait()
+	go func(wc *WCore) {
+		defer wc.wg.Done()
+
+		srv.Start()
+	}(w)
+	runtime.Gosched() //Try to garanteed that service is running on return
 }
 
 func (srv *httpService) Start() {
@@ -169,13 +182,16 @@ func (srv *httpService) Start() {
 	}()
 
 	err := srv.serv.Serve(srv.tcpln)
-	if err != nil {
+
+	if err != nil && !strings.HasSuffix(err.Error(), "use of closed network connection") {
 		log.Println(err)
 	}
 }
 
 func (srv *httpService) Stop() {
+	//will probably panic if called multiple times
 	srv.done <- true
+	close(srv.done)
 
 	startTime := time.Now()
 	for atomic.LoadUint32(&srv.connexionCount) > 0 {

@@ -1,13 +1,14 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"os"
+	"os/signal"
 	"runtime"
-	"sync"
+	"syscall"
 	"time"
 	"wcore"
 
-	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 )
 
@@ -18,54 +19,65 @@ type testing struct {
 }
 
 func (t *testing) Start() {
-	fmt.Println("test")
+	log.Println("test")
 	time.Sleep(time.Second * 10)
 }
 func (t *testing) Stop() {
-	fmt.Println("stop")
+	log.Println("stop")
 }
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+	done := make(chan bool, 1)
+	sigs := make(chan os.Signal)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	/*if err := wcore.Run(":8080"); err != nil {
-		log.Fatal(err)
-	}*/
 	func() {
 		wc, err := wcore.New()
+		if err != nil {
+			log.Fatalln(err)
+		}
 		defer wc.Close()
+
+		go func(w *wcore.WCore) {
+			select {
+			case <-sigs:
+				w.Close()
+			case <-done:
+				w.Close()
+			}
+		}(wc)
 
 		test := new(testing)
 		test.Val = "testing val"
 
-		wc.RunService(test)
-		go func(w *wcore.WCore) {
-			time.Sleep(time.Second * 5)
-			w.Close()
-		}(wc)
+		wc.AddController(test)
 
-		wc.DB("test").DropDatabase()
+		wc.Serve(":8080")
+		wc.RunService(test)
+
+		/*wc.DB("test").DropDatabase()
 
 		c := wc.DB("test").C("testing")
 
 		start := time.Now()
 
 		var wg sync.WaitGroup
-		wg.Add(10000)
+		wg.Add(1000)
 
-		for i := 0; i < 10000; i++ {
-			go func(c *mgo.Collection) {
-				err = c.Insert(&testing{Val: "test number: " + fmt.Sprint(i)})
-				if err != nil {
-					fmt.Println("Error:", err)
+		for i := 0; i < 1000; i++ {
+			go func(c *mgo.Collection, count int) {
+				e := c.Insert(&testing{Val: "test number: " + fmt.Sprint(count)})
+				if e != nil {
+					log.Println("Error:", e)
 				}
 
 				wg.Done()
-			}(c)
+			}(c, i)
 		}
 		wg.Wait()
 
-		fmt.Println("Insert took:", time.Since(start))
+		log.Println("Insert took:", time.Since(start))
 
 		start = time.Now()
 		var t []testing
@@ -73,11 +85,15 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Println("Find took:", time.Since(start))
+		log.Println("Find took:", time.Since(start))
 
-		fmt.Println("Value:", t[0].Val)
+		log.Println("Value:", t[0].Val)*/
 
 		wc.Wait()
-	}()
+		done <- true
+		close(done)
 
+		runtime.Gosched()
+		time.Sleep(time.Millisecond * 100)
+	}()
 }
