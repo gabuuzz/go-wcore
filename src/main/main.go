@@ -96,4 +96,6 @@ func main() {
 		runtime.Gosched()
 		time.Sleep(time.Millisecond * 100)
 	}()
+
+	close(sigs)
 }
