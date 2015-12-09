@@ -9,12 +9,19 @@ type Controller struct {
 	methodsMap map[string]func() //methods used by the router
 }
 
+func (c *Controller) Init() {
+
+}
+func (c *Controller) BeforeRun(ctx *Context) bool {
+	return true
+}
 func (c *Controller) Name() string {
 	return c.ControllerName
 }
 
 type ControllerInterface interface {
-	/*	Init()
-		beforeRun()*/
+	Init()                       //Run at the start of the program only
+	BeforeRun(ctx *Context) bool //Run before each request
+	AfterRun(ctx *Context)       //Run after each request. At this point, result is already be returned (good for logging...)
 	Name() string
 }

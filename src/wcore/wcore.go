@@ -131,7 +131,7 @@ func (w *WCore) Serve(path string) error {
 	srv := new(httpService)
 	srv.connexionCount = 0
 	srv.done = make(chan bool, 1)
-	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(srv.connexionCountHandler(handlers.ProxyHeaders(w.router)))}
+	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(srv.connexionCountHandler(handlers.ProxyHeaders(w)))}
 	if srv.serv.Addr == "" {
 		srv.serv.Addr = ":http"
 	}
@@ -145,6 +145,11 @@ func (w *WCore) Serve(path string) error {
 	w.RunService(srv)
 
 	return nil
+}
+
+func (w *WCore) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
+	//TODO translation handling
+	w.router.ServeHTTP(wr, req)
 }
 
 //used to prevent memory leak from Goroutines or "dead" Goroutines

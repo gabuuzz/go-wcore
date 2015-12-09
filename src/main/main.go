@@ -12,8 +12,10 @@ import (
 	"gopkg.in/mgo.v2/bson"
 )
 
+var _ wcore.ControllerInterface = testing{}
+
 type testing struct {
-	wcore.Controller
+	*wcore.Controller
 	ID  bson.ObjectId `bson:"_id,omitempty"`
 	Val string
 }
