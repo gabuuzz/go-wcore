@@ -1,12 +1,12 @@
 # WCore
-In developpement. A base for making websites with Golang and MongoDB
+In developpement. This is not a framework, this is designed to make websites in Go easier.
 
 ## TODO
 
-* Controller and Context interface/struct
-* Routing
-* Translation support
+* Controller tools (helper functions)
+* ~~Routing~~
+* ~~Translation support~~
 * Template handling
 * Database design (*Should the framework handle it or not*)
-* Handling ContentType
+* ~~Handling ContentType~~
 * Testing
