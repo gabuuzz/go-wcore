@@ -1,6 +1,7 @@
 package main
 
 import (
+	"herbw/controllers"
 	"log"
 	"os"
 	"os/signal"
@@ -9,33 +10,20 @@ import (
 	"time"
 	"wcore"
 
-	"gopkg.in/mgo.v2/bson"
+	"github.com/nicksnyder/go-i18n/i18n"
 )
-
-var _ wcore.ControllerInterface = testing{}
-
-type testing struct {
-	*wcore.Controller
-	ID  bson.ObjectId `bson:"_id,omitempty"`
-	Val string
-}
-
-func (t *testing) Start() {
-	log.Println("test")
-	time.Sleep(time.Second * 10)
-}
-func (t *testing) Stop() {
-	log.Println("stop")
-}
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	done := make(chan bool, 1)
 	sigs := make(chan os.Signal)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigs, os.Interrupt, os.Kill, syscall.SIGTERM)
+
+	i18n.MustLoadTranslationFile("translation/fr-fr.json")
+	i18n.MustLoadTranslationFile("translation/en-ca.json")
 
 	func() {
-		wc, err := wcore.New()
+		wc, err := wcore.New("user:password@/dbname?parseTime=true&timeout=2m")
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -50,46 +38,10 @@ func main() {
 			}
 		}(wc)
 
-		test := new(testing)
-		test.Val = "testing val"
-
-		wc.AddController(test)
+		wc.AddController(&controllers.ErrorsController{})
+		wc.AddController(&controllers.TestController{})
 
 		wc.Serve(":8080")
-		wc.RunService(test)
-
-		/*wc.DB("test").DropDatabase()
-
-		c := wc.DB("test").C("testing")
-
-		start := time.Now()
-
-		var wg sync.WaitGroup
-		wg.Add(1000)
-
-		for i := 0; i < 1000; i++ {
-			go func(c *mgo.Collection, count int) {
-				e := c.Insert(&testing{Val: "test number: " + fmt.Sprint(count)})
-				if e != nil {
-					log.Println("Error:", e)
-				}
-
-				wg.Done()
-			}(c, i)
-		}
-		wg.Wait()
-
-		log.Println("Insert took:", time.Since(start))
-
-		start = time.Now()
-		var t []testing
-		err = c.Find(nil).All(&t)
-		if err != nil {
-			panic(err)
-		}
-		log.Println("Find took:", time.Since(start))
-
-		log.Println("Value:", t[0].Val)*/
 
 		wc.Wait()
 		done <- true

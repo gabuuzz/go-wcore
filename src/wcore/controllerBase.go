@@ -1,5 +1,13 @@
 package wcore
 
+import (
+	"net/http"
+
+	"github.com/gorilla/context"
+	"github.com/julienschmidt/httprouter"
+	"github.com/nicksnyder/go-i18n/i18n"
+)
+
 //Controller will be used to store permanent datas
 type Controller struct {
 	ControllerName string //the name of the controller
@@ -9,19 +17,33 @@ type Controller struct {
 	methodsMap map[string]func() //methods used by the router
 }
 
-func (c *Controller) Init() {
+func (c *Controller) Init(r *httprouter.Router) {
+}
 
+func (c *Controller) Destroy() {
 }
-func (c *Controller) BeforeRun(ctx *Context) bool {
-	return true
-}
+
 func (c *Controller) Name() string {
 	return c.ControllerName
 }
 
+func (c *Controller) Tfunc(r *http.Request) i18n.TranslateFunc {
+	var trlang string
+	trv := context.Get(r, Language)
+	if trv != nil {
+		trlang = trv.(string)
+	}
+	acceptLang := r.Header.Get("Accept-Language")
+	T, err := i18n.Tfunc(trlang, acceptLang, "fr-fr")
+	if err != nil {
+		panic(err)
+	}
+
+	return T
+}
+
 type ControllerInterface interface {
-	Init()                       //Run at the start of the program only
-	BeforeRun(ctx *Context) bool //Run before each request
-	AfterRun(ctx *Context)       //Run after each request. At this point, result is already be returned (good for logging...)
+	Init(r *httprouter.Router) //called on start of server only
+	Destroy()
 	Name() string
 }

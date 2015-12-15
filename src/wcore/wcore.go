@@ -5,11 +5,11 @@ Copyrights All rights reserved Gabriel Poulenard-Talbot
 */
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -17,16 +17,25 @@ import (
 	"sync/atomic"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/context"
 	"github.com/gorilla/handlers"
+	"github.com/gorilla/sessions"
 	"github.com/julienschmidt/httprouter"
-	"gopkg.in/mgo.v2"
 )
 
 var (
-	intReg      = regexp.MustCompile("[0-9]+")
-	stringReg   = regexp.MustCompile("[^\\/]+")
-	ctlBaseType = reflect.TypeOf(Controller{})
+	IntReg    = regexp.MustCompile("[0-9]+")
+	StringReg = regexp.MustCompile("[^\\/]+")
+	//	ctlBaseType = reflect.TypeOf(Controller{})
+	CookieStore = sessions.NewCookieStore([]byte("secret-code"))
+)
+
+type ContextKey uint8
+
+const (
+	Language ContextKey = iota
+	ContentType
 )
 
 //tcpKeepAliveListener copyed from Golang net/http lib to allow ln.Close()
@@ -63,8 +72,8 @@ type WCore struct {
 	closed   bool
 	router   *httprouter.Router
 	ctls     []ControllerInterface //Controllers
-	db       *mgo.Session
 	services []WService
+	DB       *sql.DB
 	wg       sync.WaitGroup
 	mtx      sync.Mutex
 }
@@ -80,14 +89,20 @@ type httpService struct {
 	connexionCount uint32
 }
 
-func New() (*WCore, error) {
+func New(dbinfo string) (*WCore, error) {
 	var err error
 	wc := new(WCore)
-	wc.db, err = mgo.Dial("localhost")
+
+	wc.DB, err = sql.Open("mysql", dbinfo)
 	if err != nil {
-		return nil, fmt.Errorf("MongoDB error: %s", err.Error())
+		return nil, fmt.Errorf("DB error: %s", err.Error())
 	}
-	wc.db.SetMode(mgo.Monotonic, true)
+	err = wc.DB.Ping()
+	if err != nil {
+		//TODO re-enable
+		/*	wc.DB.Close()
+			return nil, fmt.Errorf("DB error: %s", err.Error())*/
+	}
 
 	wc.done = make(chan bool, 1)
 	wc.closed = false
@@ -98,7 +113,8 @@ func New() (*WCore, error) {
 	return wc, nil
 }
 func (w *WCore) Close() {
-	defer w.db.Close()
+	defer w.DB.Close()
+
 	func() {
 		defer w.mtx.Unlock()
 		w.mtx.Lock()
@@ -110,19 +126,23 @@ func (w *WCore) Close() {
 		}
 	}()
 	w.Wait()
+	defer w.mtx.Unlock()
+	w.mtx.Lock()
+
+	for _, ctl := range w.ctls {
+		ctl.Destroy()
+	}
 
 }
 func (w *WCore) Wait() {
 	w.wg.Wait()
 }
 
-func (w *WCore) DB(name string) *mgo.Database {
-	return w.db.DB(name)
-}
-
 func (w *WCore) AddController(ctl ControllerInterface) {
 	defer w.mtx.Unlock()
 	w.mtx.Lock()
+
+	ctl.Init(w.router) //adding paths to the router
 
 	w.ctls = append(w.ctls, ctl)
 }
@@ -131,7 +151,7 @@ func (w *WCore) Serve(path string) error {
 	srv := new(httpService)
 	srv.connexionCount = 0
 	srv.done = make(chan bool, 1)
-	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(srv.connexionCountHandler(handlers.ProxyHeaders(w)))}
+	srv.serv = http.Server{Addr: path, Handler: context.ClearHandler(handlers.ProxyHeaders(srv.connexionCountHandler(w)))}
 	if srv.serv.Addr == "" {
 		srv.serv.Addr = ":http"
 	}
@@ -147,19 +167,32 @@ func (w *WCore) Serve(path string) error {
 	return nil
 }
 
-func (w *WCore) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
-	//TODO translation handling
-	w.router.ServeHTTP(wr, req)
-}
+func (wc *WCore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer wc.handlePanic(w)
+	//https://godoc.org/github.com/nicksnyder/go-i18n/i18n
+	if len(r.URL.Path) >= 3 {
+		if strings.ToLower(r.URL.Path[1:3]) == "en" {
+			context.Set(r, Language, "en-ca")
+		} else {
+			context.Set(r, Language, "fr-fr")
+		}
+		r.URL.Path = r.URL.Path[3:]
+		if len(r.URL.Path) == 0 || r.URL.Path[0] != '/' {
+			r.URL.Path = "/" + r.URL.Path
+		}
+	} //else doesn't set it, will use default value
 
-//used to prevent memory leak from Goroutines or "dead" Goroutines
-func (srv *httpService) connexionCountHandler(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer atomic.AddUint32(&srv.connexionCount, ^uint32(0))
-		atomic.AddUint32(&srv.connexionCount, 1)
+	//Set default context values
+	context.Set(r, ContentType, "text/html")
 
-		h.ServeHTTP(w, r)
-	})
+	bw := NewBufferedWriter(w)
+	defer bw.Flush()
+
+	wc.router.ServeHTTP(bw, r)
+
+	if ct, ok := context.GetOk(r, ContentType); ok {
+		bw.Header().Set("Content-Type", ct.(string))
+	}
 }
 
 func (w *WCore) RunService(srv WService) {
@@ -207,85 +240,18 @@ func (srv *httpService) Stop() {
 	}
 }
 
-/*func Run(path string) error {
-	sigs := make(chan os.Signal)
-	done := make(chan bool)
+//used to prevent memory leak from Goroutines or "dead" Goroutines
+func (srv *httpService) connexionCountHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer atomic.AddUint32(&srv.connexionCount, ^uint32(0))
+		atomic.AddUint32(&srv.connexionCount, 1)
 
-	r := httprouter.New()
-	r.GET("/", controllerRoute())
-	r.GET("/:controller", controllerRoute())
-	r.GET("/:controller/:action", controllerRoute())
-	r.GET("/:controller/:action/*params", controllerRoute())
-
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	srv := http.Server{Addr: path, Handler: context.ClearHandler(connexionCountHandler(handlers.ProxyHeaders(r)))}
-	if srv.Addr == "" {
-		srv.Addr = ":http"
-	}
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		return err
-	}
-
-	tcpln := tcpKeepAliveListener{ln.(*net.TCPListener), false}
-	//handle the signal
-	go func() {
-		select {
-		case <-sigs:
-			tcpln.Stop()
-		case <-done:
-			tcpln.Stop()
-		}
-	}()
-
-	err = srv.Serve(tcpln)
-
-	startTime := time.Now()
-	for atomic.LoadUint32(&connexionCount) > 0 {
-		time.Sleep(time.Millisecond * 100)
-		if time.Since(startTime).Minutes() > 3 {
-			break //after 3 minutes don't wait
-		}
-	}
-
-	select {
-	case done <- true:
-		return err
-	default:
-		return nil //if can't write to chan, signal got received so we created the error
-	}
-}*/
-
-func controllerRoute() httprouter.Handle {
-	return httprouter.Handle(func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
-		if len(r.URL.Path) > 1 && r.URL.Path[len(r.URL.Path)-1] == '/' {
-			redirectPath := r.URL.Path
-			for len(redirectPath) > 1 && redirectPath[len(redirectPath)-1] == '/' {
-				redirectPath = redirectPath[:len(redirectPath)-1]
-			}
-			http.Redirect(w, r, redirectPath, http.StatusFound)
-			return
-		}
-
-		defer handlePanic(w)
-
-		ctx := NewContext(w, r)
-
-		/*if p.ByName("controller") == "match" {
-			action := p.ByName("action")
-			if action != "" && intReg.FindString(action) == action {
-				sessStr = "Int"
-			} else {
-				sessStr = "String"
-			}
-		}*/
-
-		w.Header().Set("Content-Type", ctx.ContentType)
-
+		h.ServeHTTP(w, r)
 	})
 }
-func handlePanic(w http.ResponseWriter) {
+
+func (wc *WCore) handlePanic(w http.ResponseWriter) {
+	//that way program won't crash, but it's better to use httprouter.PanicHandler for custom page
 	if re := recover(); re != nil {
 		//panic happened, return 500
 		var errorStr string
